@@ -296,13 +296,16 @@ explorerTxUrl(txHash, chain);     // "https://etherscan.io/tx/0x..."
 
 ## Supported Chains
 
-| Chain | Key | Factory |
-|---|---|---|
-| Sepolia Testnet | `sepolia` | `0x109d869521d668F8b3e93610D7BC794981d28EA4` |
-| Ethereum | `ethereum` | Coming soon |
-| BNB Chain | `bsc` | Coming soon |
-| Base | `base` | Coming soon |
-| Arbitrum | `arbitrum` | Coming soon |
+**Update (v1.0.2):** The factory smart contract has been deployed and unified to `0x3bF3A8384998B600acca63bc04fa251D617De059` across all supported EVM chains.
+When a token reaches its bonding curve threshold, liquidity is automatically migrated and locked in the respective DEX router for each network:
+
+| Chain | Key | Factory | Migration DEX Router |
+|---|---|---|---|
+| Ethereum | `ethereum` | `0x3bF3A8384998B600acca63bc04fa251D617De059` | `0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D` (Uniswap V2) |
+| BNB Chain | `bsc` | `0x3bF3A8384998B600acca63bc04fa251D617De059` | `0x10ED43C718714eb63d5aA57B78B54704E256024E` (PancakeSwap V2) |
+| Base | `base` | `0x3bF3A8384998B600acca63bc04fa251D617De059` | `0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24` (Uniswap V2) |
+| Arbitrum | `arbitrum` | `0x3bF3A8384998B600acca63bc04fa251D617De059` | `0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506` (SushiSwap V2) |
+| Sepolia Testnet | `sepolia` | `0x3bF3A8384998B600acca63bc04fa251D617De059` | `0xC532a74256D3Db42D0Bf7a0400fEFDbad7694008` (Uniswap V2) |
 
 ### Custom Chains
 

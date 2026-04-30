@@ -12,7 +12,7 @@ export const DEFAULT_CHAINS: Record<string, ChainConfig> = {
     rpcUrl: 'https://eth.llamarpc.com',
     explorerUrl: 'https://etherscan.io',
     nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-    factoryAddress: '', // Set after mainnet deployment
+    factoryAddress: '0x3bF3A8384998B600acca63bc04fa251D617De059', // TokenFactory on ETH
   },
   bsc: {
     chainId: 56,
@@ -21,7 +21,7 @@ export const DEFAULT_CHAINS: Record<string, ChainConfig> = {
     rpcUrl: 'https://bsc-dataseed.binance.org',
     explorerUrl: 'https://bscscan.com',
     nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 },
-    factoryAddress: '', // Set after deployment
+    factoryAddress: '0x3bF3A8384998B600acca63bc04fa251D617De059', // TokenFactory on BSC
   },
   base: {
     chainId: 8453,
@@ -30,7 +30,7 @@ export const DEFAULT_CHAINS: Record<string, ChainConfig> = {
     rpcUrl: 'https://mainnet.base.org',
     explorerUrl: 'https://basescan.org',
     nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-    factoryAddress: '', // Set after deployment
+    factoryAddress: '0x3bF3A8384998B600acca63bc04fa251D617De059', // TokenFactory on Base
   },
   arbitrum: {
     chainId: 42161,
@@ -39,7 +39,7 @@ export const DEFAULT_CHAINS: Record<string, ChainConfig> = {
     rpcUrl: 'https://arb1.arbitrum.io/rpc',
     explorerUrl: 'https://arbiscan.io',
     nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-    factoryAddress: '', // Set after deployment
+    factoryAddress: '0x3bF3A8384998B600acca63bc04fa251D617De059', // TokenFactory on Arbitrum
   },
   sepolia: {
     chainId: 11155111,
@@ -48,6 +48,6 @@ export const DEFAULT_CHAINS: Record<string, ChainConfig> = {
     rpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com',
     explorerUrl: 'https://sepolia.etherscan.io',
     nativeCurrency: { name: 'Sepolia ETH', symbol: 'ETH', decimals: 18 },
-    factoryAddress: '0x109d869521d668F8b3e93610D7BC794981d28EA4',
+    factoryAddress: '0x3bF3A8384998B600acca63bc04fa251D617De059', // TokenFactory on Sepolia
   },
 };
