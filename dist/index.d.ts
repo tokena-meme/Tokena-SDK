@@ -1,4 +1,7 @@
 import { JsonRpcProvider, Signer } from 'ethers';
+import { Connection, Commitment } from '@solana/web3.js';
+import { DynamicBondingCurveClient } from '@meteora-ag/dynamic-bonding-curve-sdk';
+import { WalletContextState } from '@solana/wallet-adapter-react';
 
 interface ChainConfig {
     /** Numeric chain ID (e.g. 1 for Ethereum mainnet) */
@@ -27,12 +30,20 @@ interface TokenState {
     currentPriceEth: number;
     /** Contract ETH balance (total, including pending fees) */
     ethBalance: number;
+    /** AMM ETH reserve only (excludes pending fees) */
+    ammEthReserve: number;
     /** Tokens held by the contract (available reserve) */
     tokenReserve: number;
     /** ETH threshold required to trigger finalization */
     ethThreshold: number;
     /** Whether the threshold has been reached */
     thresholdReached: boolean;
+    /** Whether Uniswap liquidity has been added (auto-migration complete) */
+    finalized: boolean;
+    /** Migration fee percentage (0-5) */
+    migrationFeePercent: number;
+    /** Uniswap pair address (or zero address if not created) */
+    uniswapPair: string;
     /** Whether this is a tax token */
     isTaxToken: boolean;
     /** Total token supply */
@@ -590,8 +601,12 @@ declare function wrapError(err: unknown, context?: string): TokenaError;
 /**
  * Human-readable ABI for the BondingCurve contract.
  * Covers all read/write functions and events.
+ *
+ * Includes auto-migration (finalized, getMigrationStatus) and legacy
+ * (thresholdReached, ethThreshold) function signatures for backwards
+ * compatibility with older deployed contracts.
  */
-declare const BondingCurveABI: readonly ["function name() view returns (string)", "function symbol() view returns (string)", "function decimals() view returns (uint8)", "function totalSupply() view returns (uint256)", "function balanceOf(address account) view returns (uint256)", "function getCurrentPrice() view returns (uint256 price)", "function calculateTokenAmount(uint256 ethAmount) view returns (uint256 tokenAmount)", "function calculateEthAmount(uint256 tokenAmount) view returns (uint256 ethAmount)", "function getAmmEthReserve() view returns (uint256)", "function ethThreshold() view returns (uint256)", "function thresholdReached() view returns (bool)", "function isTaxToken() view returns (bool)", "function companyWallet() view returns (address)", "function creatorWallet() view returns (address)", "function companyFeePercent() view returns (uint256)", "function initialVirtualEth() view returns (uint256)", "function pendingFees(address) view returns (uint256)", "function totalPendingFees() view returns (uint256)", "function PRECISION() view returns (uint256)", "function ZERO_TAX_FEE_BPS() view returns (uint256)", "function ZERO_TAX_CREATOR_BPS() view returns (uint256)", "function ZERO_TAX_COMPANY_BPS() view returns (uint256)", "function maxFeePercent() view returns (uint256)", "function minThreshold() view returns (uint256)", "function owner() view returns (address)", "function paused() view returns (bool)", "function uniswapRouter() view returns (address)", "function uniswapPair() view returns (address)", "function taxInfo() view returns (address devWallet, uint8 devBuyFeePercent, uint8 devSellFeePercent, address marketingWallet, uint8 marketingBuyFeePercent, uint8 marketingSellFeePercent)", "function buy(uint256 minTokens) payable", "function sell(uint256 tokenAmount, uint256 minEth)", "function claimFees()", "function updateFees(uint8 devBuyFee, uint8 devSellFee, uint8 marketingBuyFee, uint8 marketingSellFee)", "function finalize()", "function approve(address spender, uint256 amount) returns (bool)", "function transfer(address to, uint256 amount) returns (bool)", "event Buy(address indexed buyer, uint256 ethAmount, uint256 tokenAmount, uint256 newPrice)", "event Sell(address indexed seller, uint256 tokenAmount, uint256 ethAmount, uint256 newPrice)", "event CompanyFeeTaken(uint256 amount)", "event FeesAccumulated(address indexed wallet, uint256 amount)", "event FeesClaimed(address indexed wallet, uint256 amount)", "event ThresholdReached(uint256 totalEth)", "event LiquidityAdded(uint256 tokenAmount, uint256 ethAmount)", "event FeesUpdated(uint8 devBuyFee, uint8 devSellFee, uint8 marketingBuyFee, uint8 marketingSellFee)"];
+declare const BondingCurveABI: readonly ["function name() view returns (string)", "function symbol() view returns (string)", "function decimals() view returns (uint8)", "function totalSupply() view returns (uint256)", "function balanceOf(address account) view returns (uint256)", "function getCurrentPrice() view returns (uint256 price)", "function calculateTokenAmount(uint256 ethAmount) view returns (uint256 tokenAmount)", "function calculateEthAmount(uint256 tokenAmount) view returns (uint256 ethAmount)", "function getAmmEthReserve() view returns (uint256)", "function ethThreshold() view returns (uint256)", "function thresholdReached() view returns (bool)", "function finalized() view returns (bool)", "function migrationFeePercent() view returns (uint256)", "function getMigrationStatus() view returns (bool thresholdReached, bool finalized, address uniswapPair, uint256 ammEthReserve, uint256 ethThreshold, uint256 migrationFeePercent)", "function isTaxToken() view returns (bool)", "function companyWallet() view returns (address)", "function creatorWallet() view returns (address)", "function companyFeePercent() view returns (uint256)", "function initialVirtualEth() view returns (uint256)", "function pendingFees(address) view returns (uint256)", "function totalPendingFees() view returns (uint256)", "function PRECISION() view returns (uint256)", "function ZERO_TAX_FEE_BPS() view returns (uint256)", "function ZERO_TAX_CREATOR_BPS() view returns (uint256)", "function ZERO_TAX_COMPANY_BPS() view returns (uint256)", "function maxFeePercent() view returns (uint256)", "function minThreshold() view returns (uint256)", "function owner() view returns (address)", "function paused() view returns (bool)", "function uniswapRouter() view returns (address)", "function uniswapPair() view returns (address)", "function taxInfo() view returns (address devWallet, uint8 devBuyFeePercent, uint8 devSellFeePercent, address marketingWallet, uint8 marketingBuyFeePercent, uint8 marketingSellFeePercent)", "function buy(uint256 minTokens) payable", "function sell(uint256 tokenAmount, uint256 minEth)", "function claimFees()", "function updateFees(uint8 devBuyFee, uint8 devSellFee, uint8 marketingBuyFee, uint8 marketingSellFee)", "function finalize()", "function approve(address spender, uint256 amount) returns (bool)", "function transfer(address to, uint256 amount) returns (bool)", "event Buy(address indexed buyer, uint256 ethAmount, uint256 tokenAmount, uint256 newPrice)", "event Sell(address indexed seller, uint256 tokenAmount, uint256 ethAmount, uint256 newPrice)", "event CompanyFeeTaken(uint256 amount)", "event FeesAccumulated(address indexed wallet, uint256 amount)", "event FeesClaimed(address indexed wallet, uint256 amount)", "event ThresholdReached(uint256 totalEth)", "event LiquidityAdded(uint256 tokenAmount, uint256 ethAmount)", "event FeesUpdated(uint8 devBuyFee, uint8 devSellFee, uint8 marketingBuyFee, uint8 marketingSellFee)", "event AutoFinalized(address indexed uniswapPair, uint256 tokenAmount, uint256 ethAmount)", "event MigrationGasRefunded(address indexed buyer, uint256 gasRefund)", "event MigrationFeeTaken(uint256 feeAmount)"];
 
 /**
  * Human-readable ABI for the TokenFactory contract.
@@ -608,6 +623,10 @@ declare const DEFAULT_CHAINS: Record<string, ChainConfig>;
 /**
  * Get a read-only JSON-RPC provider for a chain.
  * Providers are cached and reused.
+ *
+ * Uses `new Network()` (bare constructor) instead of `Network.from()` to avoid
+ * ethers.js's built-in Infura/Alchemy plugins, which redirect requests away
+ * from your configured RPC URL.
  */
 declare function getProvider(config: ChainConfig): JsonRpcProvider;
 /**
@@ -617,6 +636,10 @@ declare function clearProviderCache(): void;
 
 /**
  * Read the full on-chain state of a bonding curve token.
+ *
+ * Uses sequential RPC calls to avoid burst rate limits on free public RPCs.
+ * Supports both new contracts (with getMigrationStatus) and legacy contracts
+ * (with individual thresholdReached/ethThreshold calls).
  *
  * @param tokenAddress - Deployed BondingCurve contract address
  * @param provider - ethers JsonRpcProvider for the target chain
@@ -1030,6 +1053,9 @@ declare function createIpfsMetadataAdapter(getCid: (tokenAddress: string) => Pro
 /**
  * Get the full lifecycle state of a bonding curve token.
  *
+ * Supports both new auto-migration contracts (getMigrationStatus) and
+ * legacy contracts (individual thresholdReached/ethThreshold calls).
+ *
  * @param tokenAddress - BondingCurve contract address
  * @param provider - Read-only provider
  * @returns Lifecycle state including stage, progress, and Uniswap info
@@ -1037,6 +1063,7 @@ declare function createIpfsMetadataAdapter(getCid: (tokenAddress: string) => Pro
 declare function getLifecycleState(tokenAddress: string, provider: JsonRpcProvider): Promise<LifecycleState>;
 /**
  * Check if a token's bonding curve has been finalized (liquidity added to Uniswap).
+ * With auto-migration, this happens atomically during a buy() call when the threshold is hit.
  *
  * @param tokenAddress - BondingCurve contract address
  * @param provider - Read-only provider
@@ -1045,11 +1072,15 @@ declare function getLifecycleState(tokenAddress: string, provider: JsonRpcProvid
 declare function isFinalized(tokenAddress: string, provider: JsonRpcProvider): Promise<boolean>;
 /**
  * Trigger finalization of a bonding curve (add liquidity to Uniswap).
- * Can only be called when the threshold has been reached.
+ *
+ * NOTE: With the new auto-migration model, finalization happens automatically
+ * during buy() when the threshold is reached. This function is only needed
+ * for legacy contracts that require manual finalization.
  *
  * @param tokenAddress - BondingCurve contract address
  * @param signer - Signer to execute the transaction
  * @returns Transaction hash
+ * @deprecated Use auto-migration contracts where buy() triggers finalization automatically.
  */
 declare function finalizeToken(tokenAddress: string, signer: Signer): Promise<{
     txHash: string;
@@ -1210,4 +1241,492 @@ declare function validatePositiveAmount(amount: string | number, label?: string)
  */
 declare function validateSlippageBps(bps: number): void;
 
-export { Axolotl, type AxolotlConfig, BondingCurveABI, type BuyParams, type BuyQuote, type CacheOptions, type ChainConfig, ChainMismatchError, type ClaimHistoryEntry, type ClaimResult, ContractNotFoundError, type CreateTokenParams, type CreateTokenResult, type CreatorAdapter, type CreatorProfile, DEFAULT_CHAINS, DEFAULT_IPFS_GATEWAY, type EnrichedTokenState, type FactoryConfig, InsufficientBalanceError, InvalidAddressError, InvalidAmountError, type LifecycleState, type MetadataAdapter, type ProjectInfo, RequestCache, RpcError, type SellParams, type SellQuote, SlippageExceededError, ThresholdAlreadyReachedError, type TokenEvent, TokenFactoryABI, type TokenLifecycleStage, type TokenListOptions, type TokenMetadata, TokenNotFoundError, type TokenState, Tokena, type TokenaConfig, TokenaError, type TradeEvent, TradePausedError, type TradePreview, type TradeResult, TransactionFailedError, type TxOptions, batchGetPendingFees, batchGetTokenStates, buy, calculateBondingCurvePrice, calculatePriceImpact, calculateSlippageMinimum, claimFees, clearProviderCache, createIpfsMetadataAdapter, createToken, enrichTokenState, estimateBuyGas, estimateCreateGas, estimateEthForTokens, estimateSellGas, estimateTokensForEth, explorerAddressUrl, explorerTokenUrl, explorerTxUrl, finalizeToken, formatEthAmount, formatPercent, formatTokenAmount, getAllTokens, getClaimHistory, getCreationEvents, getCreationFee, getCreatorProfile, getCreatorTokens, getFactoryConfig, getHolderCount, getLifecycleState, getMigrationState, getNewTokens, getPendingFees, getProvider, getTokenBalance, getTokenByAddress, getTokenByIndex, getTokenCount, getTokenEvents, getTokenState, getTradeHistory, ipfsUrl, isFinalized, loadFromIpfs, parseTokenMetadata, previewBuy, previewSell, quoteBuy, quoteSell, searchTokens, sell, shortenAddress, simulateBuy, simulateSell, subscribeNewTokens, subscribeTrades, timeAgo, validateAddress, validatePositiveAmount, validateSlippageBps, withCache, wrapError };
+/**
+ * Solana / Meteora DBC constants.
+ * Mirrors src/lib/meteora/constants.ts and src/lib/constants/tokenomics.ts
+ */
+declare const METEORA_DBC_PROGRAM_ID = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN";
+declare const PLATFORM_FEE_WALLET = "feeDwGK7o1wn57VUtbMqBAnc9UBLeeywUHNvqoqGuKW";
+declare const TOKEN_DECIMALS = 6;
+declare const DEFAULT_TOTAL_SUPPLY = 1000000000;
+declare const CREATION_FEE_SOL = 0.01;
+/**
+ * Trading fee (1%) — charged on every buy/sell by the Meteora pool.
+ *   0.2% → Meteora protocol (20% of total)
+ *   0.8% → feeClaimer (80% of total)
+ *     of which: 0.4% creator + 0.4% platform (split at claim time)
+ */
+declare const TRADING_FEE_PCT = 0.01;
+declare const PLATFORM_FEE_BPS = 40;
+/**
+ * Bonding curve formula constants.
+ *   K = INITIAL_LP_SOL × TOTAL_SUPPLY
+ *   mcap_sol = (INITIAL_LP + solRaised)² / INITIAL_LP
+ */
+declare const TOKENOMICS: {
+    readonly TOTAL_SUPPLY: 1000000000;
+    readonly TOKEN_DECIMALS: 6;
+    readonly INITIAL_LP_SOL: 5;
+    readonly MIGRATION_LP_SOL: 25;
+    readonly K: 5000000000;
+};
+/**
+ * Meteora takes 20% protocol cut from all trading fees.
+ * Only 80% reaches the feeClaimer.
+ * To get desired effective fee, inflate: desired / 0.8
+ */
+declare const METEORA_PROTOCOL_CUT = 0.2;
+declare const LP_SHARE: number;
+
+/**
+ * Get or create a Solana Connection.
+ * Reuses existing connection if the URL hasn't changed.
+ *
+ * @param rpcUrl - Solana JSON-RPC endpoint
+ * @param commitment - Transaction commitment level (default: 'confirmed')
+ */
+declare function getSolanaConnection(rpcUrl: string, commitment?: Commitment): Connection;
+/**
+ * Confirm a transaction with timeout + retry.
+ *
+ * @param signature - Transaction signature
+ * @param connection - Solana Connection
+ * @param maxRetries - Max retry attempts (default: 5)
+ */
+declare function confirmTx(signature: string, connection: Connection, maxRetries?: number): Promise<boolean>;
+/**
+ * Clear the cached connection.
+ */
+declare function clearSolanaConnection(): void;
+
+/**
+ * Get or create a singleton DynamicBondingCurveClient.
+ *
+ * @param connection - Solana Connection
+ * @param commitment - Transaction commitment (default: 'confirmed')
+ */
+declare function getDbcClient(connection: Connection, commitment?: Commitment): DynamicBondingCurveClient;
+/**
+ * Clear the cached client.
+ */
+declare function clearDbcClient(): void;
+
+/**
+ * Bonding curve math utilities for Solana/Meteora tokens.
+ * Mirrors src/lib/utils/marketcap.ts — the exact same formulas.
+ *
+ * All functions accept an optional `CurveOverrides` parameter to customize
+ * the initial virtual LP, migration threshold, and total supply.
+ * If omitted, the Tokena defaults are used (5 SOL LP, 25 SOL migration, 1B supply).
+ */
+/**
+ * Optional overrides for bonding curve parameters.
+ * Pass these to any math function to use custom curve settings.
+ */
+interface CurveOverrides {
+    /** Initial virtual LP in SOL (default: 5) — sets starting FDV */
+    initialLpSol?: number;
+    /** Migration threshold in SOL raised (default: 25) */
+    migrationLpSol?: number;
+    /** Total token supply (default: 1_000_000_000) */
+    totalSupply?: number;
+}
+/**
+ * Market cap in SOL given how much SOL has been raised so far.
+ *
+ *   mcap_sol = (initial_lp + sol_raised)² / initial_lp
+ *
+ * @param solRaised - SOL raised so far
+ * @param overrides - Optional custom curve params
+ */
+declare function getMcapSol(solRaised: number, overrides?: CurveOverrides): number;
+/**
+ * Market cap in USD.
+ */
+declare function getMcapUsd(solRaised: number, solPriceUsd: number, overrides?: CurveOverrides): number;
+/**
+ * Price per token in USD.
+ */
+declare function getTokenPriceUsd(solRaised: number, solPriceUsd: number, overrides?: CurveOverrides): number;
+/**
+ * Price per token in SOL.
+ */
+declare function getTokenPriceSol(solRaised: number, overrides?: CurveOverrides): number;
+/**
+ * Migration progress 0–100%.
+ *
+ * @param solRaised - SOL raised so far
+ * @param overrides - Optional custom curve params (uses migrationLpSol)
+ */
+declare function getMigrationProgress(solRaised: number, overrides?: CurveOverrides): number;
+/**
+ * Given a USD market cap, return the implied sol_raised.
+ *
+ *   sol_raised = sqrt(mcap_usd / sol_price × initial_lp) - initial_lp
+ */
+declare function getSolRaisedFromMcapUsd(mcapUsd: number, solPriceUsd: number, overrides?: CurveOverrides): number;
+/**
+ * Tokens sold at a given sol_raised level.
+ *
+ *   tokens_sold = total_supply - (k / virtual_sol)
+ */
+declare function getTokensSold(solRaised: number, overrides?: CurveOverrides): number;
+/**
+ * Off-chain buy quote.
+ * Returns tokens out, new mcap USD, price impact.
+ *
+ * @param solIn - SOL amount to spend
+ * @param currentSolRaised - Current SOL raised in the pool
+ * @param solPriceUsd - Current SOL/USD price
+ * @param overrides - Optional custom curve params
+ */
+declare function quoteBuyOffchain(solIn: number, currentSolRaised: number, solPriceUsd: number, overrides?: CurveOverrides): {
+    tokensOut: number;
+    newMcapUsd: number;
+    newPriceUsd: number;
+    priceImpact: number;
+    feeSol: number;
+};
+/**
+ * Off-chain sell quote.
+ *
+ * @param tokensIn - Token amount to sell
+ * @param currentSolRaised - Current SOL raised in the pool
+ * @param solPriceUsd - Current SOL/USD price
+ * @param overrides - Optional custom curve params
+ */
+declare function quoteSellOffchain(tokensIn: number, currentSolRaised: number, solPriceUsd: number, overrides?: CurveOverrides): {
+    solOut: number;
+    newMcapUsd: number;
+    newPriceUsd: number;
+    priceImpact: number;
+    feeSol: number;
+};
+/**
+ * Cached SOL price from CoinGecko. Refreshes every 60s.
+ */
+declare function getCachedSolPrice(): Promise<number>;
+
+interface SolanaPoolState {
+    /** Token mint address */
+    mintAddress: string;
+    /** SOL raised (quote reserve) */
+    solRaised: number;
+    /** SOL threshold for migration */
+    migrationThreshold: number;
+    /** Migration progress 0–100% */
+    migrationProgress: number;
+    /** Whether the pool has migrated to DEX */
+    isMigrated: boolean;
+    /** Meteora pool address (if available) */
+    meteoraPoolAddress: string | null;
+    /** Current price in SOL per token */
+    currentPrice: number;
+    /** Market cap in SOL */
+    marketCapSol: number;
+    /** Total supply (human-readable) */
+    totalSupply: number;
+    /** Tokens available for purchase */
+    tokensAvailable: number;
+}
+/**
+ * Fetch pool state using the Meteora SDK's StateService.
+ * Mirrors src/lib/meteora/pool-state.ts → getPoolState()
+ *
+ * @param poolAddress - Meteora DBC pool address
+ * @param connection - Solana Connection
+ */
+declare function getPoolState(poolAddress: string, connection: Connection): Promise<SolanaPoolState>;
+/**
+ * Lightweight on-chain market cap fetch.
+ * Uses the bonding curve formula: mcap_sol = (INITIAL_LP + solRaised)² / INITIAL_LP
+ *
+ * @param poolAddress - Meteora DBC pool address
+ * @param connection - Solana Connection
+ * @param solPriceUsd - Current SOL price in USD
+ */
+declare function getOnChainMcap(poolAddress: string, connection: Connection, solPriceUsd: number): Promise<{
+    solRaised: number;
+    marketCapSol: number;
+    marketCapUsd: number;
+} | null>;
+/**
+ * Poll pool state every N seconds.
+ * Returns an unsubscribe function.
+ *
+ * @param poolAddress - Meteora DBC pool address
+ * @param connection - Solana Connection
+ * @param onUpdate - Callback with latest pool state
+ * @param intervalMs - Poll interval in milliseconds (default: 10000)
+ */
+declare function startPoolStatePolling(poolAddress: string, connection: Connection, onUpdate: (state: SolanaPoolState) => void, intervalMs?: number): () => void;
+
+interface SolanaTradeParams {
+    /** Meteora DBC pool address */
+    poolAddress: string;
+    /** Token mint address */
+    mintAddress: string;
+    /** Connected wallet */
+    wallet: WalletContextState;
+    /** Solana Connection */
+    connection: Connection;
+    /** Slippage tolerance in basis points (default: 100 = 1%) */
+    slippageBps?: number;
+    /** Priority fee in SOL for faster inclusion */
+    priorityFeeSol?: number;
+}
+interface SolanaBuyParams extends SolanaTradeParams {
+    /** SOL amount to spend (e.g. 0.5) */
+    solAmount: number;
+    /** Current SOL raised (for off-chain quote). If omitted, fetched automatically. */
+    currentSolRaised?: number;
+}
+interface SolanaSellParams extends SolanaTradeParams {
+    /** Token amount to sell (human-readable, e.g. 500000) */
+    tokenAmount: number;
+    /** Current SOL raised (for off-chain quote). If omitted, fetched automatically. */
+    currentSolRaised?: number;
+}
+interface SolanaTradeResult {
+    /** Transaction signature */
+    txSignature: string;
+    /** Estimated output amount */
+    amountOut: number;
+    /** Price impact fraction (e.g. 0.02 = 2%) */
+    priceImpact: number;
+    /** Fee in SOL */
+    feeSol: number;
+    /** New SOL raised after trade */
+    solRaisedAfter: number;
+    /** New market cap in USD */
+    mcapUsd: number;
+    /** New token price in USD */
+    tokenPriceUsd: number;
+}
+interface TradeCallbacks {
+    /** Called after trade is confirmed on-chain. Use to record to your database. */
+    onTradeComplete?: (result: SolanaTradeResult & {
+        type: 'buy' | 'sell';
+        mintAddress: string;
+        walletAddress: string;
+        solAmount: number;
+        tokenAmount: number;
+    }) => void;
+}
+/**
+ * Buy tokens on a Meteora DBC bonding curve.
+ * Mirrors src/lib/meteora/trade.ts → buyTokens()
+ *
+ * @param params - Buy parameters
+ * @param callbacks - Optional callbacks for DB recording
+ */
+declare function buyTokens(params: SolanaBuyParams, callbacks?: TradeCallbacks): Promise<SolanaTradeResult>;
+/**
+ * Sell tokens on a Meteora DBC bonding curve.
+ * Mirrors src/lib/meteora/trade.ts → sellTokens()
+ *
+ * @param params - Sell parameters
+ * @param callbacks - Optional callbacks for DB recording
+ */
+declare function sellTokens(params: SolanaSellParams, callbacks?: TradeCallbacks): Promise<SolanaTradeResult>;
+
+interface ClaimFeesParams {
+    /** Meteora DBC pool address */
+    poolAddress: string;
+    /** Connected wallet */
+    wallet: WalletContextState;
+    /** Solana Connection */
+    connection: Connection;
+    /** Creator's tax % (e.g. 5). Needed to compute the platform split. */
+    creatorFeePercent: number;
+    /** Original creator of the pool (needed for Meteora SDK args) */
+    poolCreator?: string;
+}
+interface ClaimFeesResult {
+    /** Transaction signature */
+    txSignature: string;
+}
+interface ClaimableInfo {
+    /** Pool address */
+    poolAddress: string;
+    /** Creator's claimable share in SOL */
+    claimableSol: number;
+    /** Creator's total claimed in SOL */
+    totalClaimedSol: number;
+}
+/**
+ * Get the claimable + already-claimed trading fee for a given pool.
+ * Returns only the creator's visible share.
+ * Mirrors src/lib/meteora/claim-fees.ts → getClaimableFee()
+ *
+ * @param poolAddress - Meteora DBC pool address
+ * @param connection - Solana Connection
+ * @param creatorFeePercent - Creator's tax percentage (0-5)
+ */
+declare function getClaimableFee(poolAddress: string, connection: Connection, creatorFeePercent: number): Promise<{
+    claimable: number;
+    totalClaimed: number;
+}>;
+/**
+ * Get claimable fees for multiple pools at once.
+ *
+ * @param poolAddresses - Array of pool addresses
+ * @param connection - Solana Connection
+ * @param creatorFeeMap - Map of poolAddress → creatorFeePercent
+ */
+declare function getClaimableFeesForPools(poolAddresses: string[], connection: Connection, creatorFeeMap: Record<string, number>): Promise<ClaimableInfo[]>;
+/**
+ * Claim accumulated creator trading fees from a Meteora DBC pool.
+ * Mirrors src/lib/meteora/claim-fees.ts → claimCreatorFees()
+ *
+ * The full pool fee (creator% + 0.8% base) is claimed in one transaction.
+ * In the same atomic transaction, the platform's 0.4% share is transferred
+ * from the creator's wallet to the platform wallet.
+ *
+ * Net result for the creator: they receive their creatorTax% + 0.4% share.
+ * Net result for the platform: receives the 0.4% share.
+ *
+ * @param params - Claim parameters
+ */
+declare function claimCreatorFees(params: ClaimFeesParams): Promise<ClaimFeesResult>;
+
+interface LaunchTokenParams {
+    /** Token name */
+    name: string;
+    /** Token ticker symbol */
+    symbol: string;
+    /** Token description */
+    description: string;
+    /** Image URL (already uploaded) */
+    imageUrl: string;
+    /** Metadata URI (IPFS or other) */
+    metadataUri: string;
+    /** Twitter handle */
+    twitter?: string;
+    /** Telegram group URL */
+    telegram?: string;
+    /** Website URL */
+    website?: string;
+    /** Initial price in SOL (e.g. 0.000001) */
+    initialPriceSol: number;
+    /** SOL threshold for migration (e.g. 85) */
+    migrationThresholdSol: number;
+    /** Total supply (e.g. 1_000_000_000) */
+    totalSupply: number;
+    /** Creator fee percent 0–5% (default: 0) */
+    creatorFeePercent?: number;
+    /** Initial virtual LP in SOL — sets starting FDV (default: 5 SOL) */
+    initialVirtualLpSol?: number;
+    /**
+     * Migration market cap in SOL — sets the FDV at which the pool graduates.
+     * Default: 180 SOL FDV (~25 SOL raised with 5 SOL virtual LP).
+     * Formula: migrationThreshold ≈ sqrt(migrationMarketCapSol × initialVirtualLpSol) - initialVirtualLpSol
+     */
+    migrationMarketCapSol?: number;
+    /** Optional initial buy amount in SOL */
+    initialBuySol?: number;
+    /** Connected wallet */
+    wallet: WalletContextState;
+    /** Solana Connection */
+    connection: Connection;
+}
+interface LaunchTokenResult {
+    /** Token mint address */
+    mintAddress: string;
+    /** Pool address */
+    poolAddress: string;
+    /** Creation transaction signature */
+    txSignature: string;
+    /** Metadata URI */
+    metadataUri: string;
+    /** Initial buy transaction signature (if initial buy was done) */
+    buyTxSignature?: string;
+}
+interface LaunchCallbacks {
+    /** Called after token is created (before initial buy) */
+    onTokenCreated?: (result: {
+        mintAddress: string;
+        poolAddress: string;
+        txSignature: string;
+    }) => void;
+    /** Called after initial buy is confirmed */
+    onInitialBuyComplete?: (result: {
+        mintAddress: string;
+        txSignature: string;
+        solAmount: number;
+        tokensOut: number;
+        feeSol: number;
+    }) => void;
+}
+/**
+ * Full token launch flow on Solana via Meteora DBC.
+ * Mirrors src/lib/meteora/pool.ts → launchToken()
+ *
+ * 1. Build curve config via buildCurveWithMarketCap
+ * 2. Create config + pool on-chain
+ * 3. Optional initial buy in separate transaction
+ *
+ * @param params - Launch parameters
+ * @param callbacks - Optional callbacks for DB recording
+ */
+declare function launchToken(params: LaunchTokenParams, callbacks?: LaunchCallbacks): Promise<LaunchTokenResult>;
+
+/**
+ * Solana / Meteora DBC module for the Tokena SDK.
+ *
+ * Provides the same bonding curve functionality as the EVM module,
+ * but built on Solana using Meteora's Dynamic Bonding Curve SDK.
+ */
+
+declare const index_CREATION_FEE_SOL: typeof CREATION_FEE_SOL;
+type index_ClaimFeesParams = ClaimFeesParams;
+type index_ClaimFeesResult = ClaimFeesResult;
+type index_ClaimableInfo = ClaimableInfo;
+type index_CurveOverrides = CurveOverrides;
+declare const index_DEFAULT_TOTAL_SUPPLY: typeof DEFAULT_TOTAL_SUPPLY;
+declare const index_LP_SHARE: typeof LP_SHARE;
+type index_LaunchCallbacks = LaunchCallbacks;
+type index_LaunchTokenParams = LaunchTokenParams;
+type index_LaunchTokenResult = LaunchTokenResult;
+declare const index_METEORA_DBC_PROGRAM_ID: typeof METEORA_DBC_PROGRAM_ID;
+declare const index_METEORA_PROTOCOL_CUT: typeof METEORA_PROTOCOL_CUT;
+declare const index_PLATFORM_FEE_BPS: typeof PLATFORM_FEE_BPS;
+declare const index_PLATFORM_FEE_WALLET: typeof PLATFORM_FEE_WALLET;
+type index_SolanaBuyParams = SolanaBuyParams;
+type index_SolanaPoolState = SolanaPoolState;
+type index_SolanaSellParams = SolanaSellParams;
+type index_SolanaTradeParams = SolanaTradeParams;
+type index_SolanaTradeResult = SolanaTradeResult;
+declare const index_TOKENOMICS: typeof TOKENOMICS;
+declare const index_TOKEN_DECIMALS: typeof TOKEN_DECIMALS;
+declare const index_TRADING_FEE_PCT: typeof TRADING_FEE_PCT;
+type index_TradeCallbacks = TradeCallbacks;
+declare const index_buyTokens: typeof buyTokens;
+declare const index_claimCreatorFees: typeof claimCreatorFees;
+declare const index_clearDbcClient: typeof clearDbcClient;
+declare const index_clearSolanaConnection: typeof clearSolanaConnection;
+declare const index_confirmTx: typeof confirmTx;
+declare const index_getCachedSolPrice: typeof getCachedSolPrice;
+declare const index_getClaimableFee: typeof getClaimableFee;
+declare const index_getClaimableFeesForPools: typeof getClaimableFeesForPools;
+declare const index_getDbcClient: typeof getDbcClient;
+declare const index_getMcapSol: typeof getMcapSol;
+declare const index_getMcapUsd: typeof getMcapUsd;
+declare const index_getMigrationProgress: typeof getMigrationProgress;
+declare const index_getOnChainMcap: typeof getOnChainMcap;
+declare const index_getPoolState: typeof getPoolState;
+declare const index_getSolRaisedFromMcapUsd: typeof getSolRaisedFromMcapUsd;
+declare const index_getSolanaConnection: typeof getSolanaConnection;
+declare const index_getTokenPriceSol: typeof getTokenPriceSol;
+declare const index_getTokenPriceUsd: typeof getTokenPriceUsd;
+declare const index_getTokensSold: typeof getTokensSold;
+declare const index_launchToken: typeof launchToken;
+declare const index_quoteBuyOffchain: typeof quoteBuyOffchain;
+declare const index_quoteSellOffchain: typeof quoteSellOffchain;
+declare const index_sellTokens: typeof sellTokens;
+declare const index_startPoolStatePolling: typeof startPoolStatePolling;
+declare namespace index {
+  export { index_CREATION_FEE_SOL as CREATION_FEE_SOL, type index_ClaimFeesParams as ClaimFeesParams, type index_ClaimFeesResult as ClaimFeesResult, type index_ClaimableInfo as ClaimableInfo, type index_CurveOverrides as CurveOverrides, index_DEFAULT_TOTAL_SUPPLY as DEFAULT_TOTAL_SUPPLY, index_LP_SHARE as LP_SHARE, type index_LaunchCallbacks as LaunchCallbacks, type index_LaunchTokenParams as LaunchTokenParams, type index_LaunchTokenResult as LaunchTokenResult, index_METEORA_DBC_PROGRAM_ID as METEORA_DBC_PROGRAM_ID, index_METEORA_PROTOCOL_CUT as METEORA_PROTOCOL_CUT, index_PLATFORM_FEE_BPS as PLATFORM_FEE_BPS, index_PLATFORM_FEE_WALLET as PLATFORM_FEE_WALLET, type index_SolanaBuyParams as SolanaBuyParams, type index_SolanaPoolState as SolanaPoolState, type index_SolanaSellParams as SolanaSellParams, type index_SolanaTradeParams as SolanaTradeParams, type index_SolanaTradeResult as SolanaTradeResult, index_TOKENOMICS as TOKENOMICS, index_TOKEN_DECIMALS as TOKEN_DECIMALS, index_TRADING_FEE_PCT as TRADING_FEE_PCT, type index_TradeCallbacks as TradeCallbacks, index_buyTokens as buyTokens, index_claimCreatorFees as claimCreatorFees, index_clearDbcClient as clearDbcClient, index_clearSolanaConnection as clearSolanaConnection, index_confirmTx as confirmTx, index_getCachedSolPrice as getCachedSolPrice, index_getClaimableFee as getClaimableFee, index_getClaimableFeesForPools as getClaimableFeesForPools, index_getDbcClient as getDbcClient, index_getMcapSol as getMcapSol, index_getMcapUsd as getMcapUsd, index_getMigrationProgress as getMigrationProgress, index_getOnChainMcap as getOnChainMcap, index_getPoolState as getPoolState, index_getSolRaisedFromMcapUsd as getSolRaisedFromMcapUsd, index_getSolanaConnection as getSolanaConnection, index_getTokenPriceSol as getTokenPriceSol, index_getTokenPriceUsd as getTokenPriceUsd, index_getTokensSold as getTokensSold, index_launchToken as launchToken, index_quoteBuyOffchain as quoteBuyOffchain, index_quoteSellOffchain as quoteSellOffchain, index_sellTokens as sellTokens, index_startPoolStatePolling as startPoolStatePolling };
+}
+
+export { Axolotl, type AxolotlConfig, BondingCurveABI, type BuyParams, type BuyQuote, type CacheOptions, type ChainConfig, ChainMismatchError, type ClaimHistoryEntry, type ClaimResult, ContractNotFoundError, type CreateTokenParams, type CreateTokenResult, type CreatorAdapter, type CreatorProfile, DEFAULT_CHAINS, DEFAULT_IPFS_GATEWAY, type EnrichedTokenState, type FactoryConfig, InsufficientBalanceError, InvalidAddressError, InvalidAmountError, type LifecycleState, type MetadataAdapter, type ProjectInfo, RequestCache, RpcError, type SellParams, type SellQuote, SlippageExceededError, ThresholdAlreadyReachedError, type TokenEvent, TokenFactoryABI, type TokenLifecycleStage, type TokenListOptions, type TokenMetadata, TokenNotFoundError, type TokenState, Tokena, type TokenaConfig, TokenaError, type TradeEvent, TradePausedError, type TradePreview, type TradeResult, TransactionFailedError, type TxOptions, batchGetPendingFees, batchGetTokenStates, buy, calculateBondingCurvePrice, calculatePriceImpact, calculateSlippageMinimum, claimFees, clearProviderCache, createIpfsMetadataAdapter, createToken, enrichTokenState, estimateBuyGas, estimateCreateGas, estimateEthForTokens, estimateSellGas, estimateTokensForEth, explorerAddressUrl, explorerTokenUrl, explorerTxUrl, finalizeToken, formatEthAmount, formatPercent, formatTokenAmount, getAllTokens, getClaimHistory, getCreationEvents, getCreationFee, getCreatorProfile, getCreatorTokens, getFactoryConfig, getHolderCount, getLifecycleState, getMigrationState, getNewTokens, getPendingFees, getProvider, getTokenBalance, getTokenByAddress, getTokenByIndex, getTokenCount, getTokenEvents, getTokenState, getTradeHistory, ipfsUrl, isFinalized, loadFromIpfs, parseTokenMetadata, previewBuy, previewSell, quoteBuy, quoteSell, searchTokens, sell, shortenAddress, simulateBuy, simulateSell, index as solana, subscribeNewTokens, subscribeTrades, timeAgo, validateAddress, validatePositiveAmount, validateSlippageBps, withCache, wrapError };

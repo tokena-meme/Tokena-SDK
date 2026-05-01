@@ -54,7 +54,7 @@ var DEFAULT_CHAINS = {
     rpcUrl: "https://eth.llamarpc.com",
     explorerUrl: "https://etherscan.io",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    factoryAddress: "0x3bF3A8384998B600acca63bc04fa251D617De059"
+    factoryAddress: "0x153B33eee6412066f187B2146deEC10A3A4893C3"
     // TokenFactory on ETH
   },
   bsc: {
@@ -64,7 +64,7 @@ var DEFAULT_CHAINS = {
     rpcUrl: "https://bsc-dataseed.binance.org",
     explorerUrl: "https://bscscan.com",
     nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
-    factoryAddress: "0x3bF3A8384998B600acca63bc04fa251D617De059"
+    factoryAddress: "0x153B33eee6412066f187B2146deEC10A3A4893C3"
     // TokenFactory on BSC
   },
   base: {
@@ -74,7 +74,7 @@ var DEFAULT_CHAINS = {
     rpcUrl: "https://mainnet.base.org",
     explorerUrl: "https://basescan.org",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    factoryAddress: "0x3bF3A8384998B600acca63bc04fa251D617De059"
+    factoryAddress: "0x153B33eee6412066f187B2146deEC10A3A4893C3"
     // TokenFactory on Base
   },
   arbitrum: {
@@ -84,7 +84,7 @@ var DEFAULT_CHAINS = {
     rpcUrl: "https://arb1.arbitrum.io/rpc",
     explorerUrl: "https://arbiscan.io",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    factoryAddress: "0x3bF3A8384998B600acca63bc04fa251D617De059"
+    factoryAddress: "0x153B33eee6412066f187B2146deEC10A3A4893C3"
     // TokenFactory on Arbitrum
   },
   sepolia: {
@@ -94,7 +94,7 @@ var DEFAULT_CHAINS = {
     rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
     explorerUrl: "https://sepolia.etherscan.io",
     nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
-    factoryAddress: "0x3bF3A8384998B600acca63bc04fa251D617De059"
+    factoryAddress: "0x153B33eee6412066f187B2146deEC10A3A4893C3"
     // TokenFactory on Sepolia
   }
 };
@@ -106,9 +106,14 @@ function getProvider(config) {
   const cacheKey = `${config.chainId}:${config.rpcUrl}`;
   const cached = providerCache.get(cacheKey);
   if (cached) return cached;
-  const provider = new import_ethers.JsonRpcProvider(config.rpcUrl, {
-    chainId: config.chainId,
-    name: config.name
+  const network = new import_ethers.Network(config.name, config.chainId);
+  const provider = new import_ethers.JsonRpcProvider(config.rpcUrl, network, {
+    batchMaxCount: 1,
+    // No batching — prevents one failed call from poisoning others
+    staticNetwork: network,
+    // Prevents _detectNetwork which redirects to built-in Infura endpoints
+    pollingInterval: 3e4
+    // 30s polling to avoid rate limits on free RPCs
   });
   providerCache.set(cacheKey, provider);
   return provider;
@@ -134,6 +139,9 @@ var BondingCurveABI = [
   "function getAmmEthReserve() view returns (uint256)",
   "function ethThreshold() view returns (uint256)",
   "function thresholdReached() view returns (bool)",
+  "function finalized() view returns (bool)",
+  "function migrationFeePercent() view returns (uint256)",
+  "function getMigrationStatus() view returns (bool thresholdReached, bool finalized, address uniswapPair, uint256 ammEthReserve, uint256 ethThreshold, uint256 migrationFeePercent)",
   "function isTaxToken() view returns (bool)",
   "function companyWallet() view returns (address)",
   "function creatorWallet() view returns (address)",
@@ -168,7 +176,10 @@ var BondingCurveABI = [
   "event FeesClaimed(address indexed wallet, uint256 amount)",
   "event ThresholdReached(uint256 totalEth)",
   "event LiquidityAdded(uint256 tokenAmount, uint256 ethAmount)",
-  "event FeesUpdated(uint8 devBuyFee, uint8 devSellFee, uint8 marketingBuyFee, uint8 marketingSellFee)"
+  "event FeesUpdated(uint8 devBuyFee, uint8 devSellFee, uint8 marketingBuyFee, uint8 marketingSellFee)",
+  "event AutoFinalized(address indexed uniswapPair, uint256 tokenAmount, uint256 ethAmount)",
+  "event MigrationGasRefunded(address indexed buyer, uint256 gasRefund)",
+  "event MigrationFeeTaken(uint256 feeAmount)"
 ];
 
 // src/core/validation.ts
@@ -294,38 +305,45 @@ async function getTokenState(tokenAddress, provider) {
   validateAddress(tokenAddress, "tokenAddress");
   try {
     const token = new import_ethers3.Contract(tokenAddress, BondingCurveABI, provider);
-    const [
-      name,
-      symbol,
-      decimals,
-      totalSupply,
-      currentPrice,
-      ethThreshold,
-      thresholdReached,
-      isTaxToken,
-      tokenReserve,
-      taxInfo
-    ] = await Promise.all([
-      token.name(),
-      token.symbol(),
-      token.decimals(),
-      token.totalSupply(),
-      token.getCurrentPrice(),
-      token.ethThreshold(),
-      token.thresholdReached(),
-      token.isTaxToken(),
-      token.balanceOf(tokenAddress),
-      token.taxInfo()
-    ]);
+    const name = await token.name();
+    const symbol = await token.symbol();
+    const decimals = await token.decimals();
+    const totalSupply = await token.totalSupply();
+    const currentPrice = await token.getCurrentPrice();
+    const isTaxToken = await token.isTaxToken();
+    const tokenReserve = await token.balanceOf(tokenAddress);
+    const taxInfo = await token.taxInfo();
     const ethBalance = await provider.getBalance(tokenAddress);
     const precision = BigInt(10) ** BigInt(18);
+    let thresholdReached = false;
+    let finalized = false;
+    let uniswapPair = "0x0000000000000000000000000000000000000000";
+    let ammReserve = ethBalance;
+    let ethThreshold = BigInt(0);
+    let migrationFeePercent = BigInt(0);
+    try {
+      const migrationStatus = await token.getMigrationStatus();
+      [thresholdReached, finalized, uniswapPair, ammReserve, ethThreshold, migrationFeePercent] = migrationStatus;
+    } catch {
+      try {
+        thresholdReached = await token.thresholdReached();
+        ethThreshold = await token.ethThreshold();
+        ammReserve = ethBalance;
+        finalized = false;
+      } catch (err) {
+      }
+    }
     return {
       currentPrice: currentPrice.toString(),
       currentPriceEth: Number(currentPrice) / Number(precision),
       ethBalance: Number((0, import_ethers3.formatEther)(ethBalance)),
+      ammEthReserve: Number((0, import_ethers3.formatEther)(ammReserve)),
       tokenReserve: Number((0, import_ethers3.formatUnits)(tokenReserve, decimals)),
       ethThreshold: Number((0, import_ethers3.formatEther)(ethThreshold)),
       thresholdReached,
+      finalized,
+      migrationFeePercent: Number(migrationFeePercent),
+      uniswapPair,
       isTaxToken,
       totalSupply: Number((0, import_ethers3.formatUnits)(totalSupply, decimals)),
       name,
@@ -343,12 +361,12 @@ async function getTokenState(tokenAddress, provider) {
   }
 }
 function enrichTokenState(state) {
-  const progress = state.ethThreshold > 0 ? Math.min(state.ethBalance / state.ethThreshold * 100, 100) : 0;
+  const progress = state.ethThreshold > 0 ? Math.min(state.ammEthReserve / state.ethThreshold * 100, 100) : 0;
   return {
     ...state,
     progress,
     marketCapEth: state.currentPriceEth * state.totalSupply,
-    remainingEth: Math.max(state.ethThreshold - state.ethBalance, 0),
+    remainingEth: Math.max(state.ethThreshold - state.ammEthReserve, 0),
     totalTaxPercent: state.devBuyFeePercent + state.devSellFeePercent + state.marketingBuyFeePercent + state.marketingSellFeePercent
   };
 }
@@ -357,10 +375,8 @@ async function getTokenBalance(tokenAddress, walletAddress, provider) {
   validateAddress(walletAddress, "walletAddress");
   try {
     const token = new import_ethers3.Contract(tokenAddress, BondingCurveABI, provider);
-    const [balance, decimals] = await Promise.all([
-      token.balanceOf(walletAddress),
-      token.decimals()
-    ]);
+    const balance = await token.balanceOf(walletAddress);
+    const decimals = await token.decimals();
     return Number((0, import_ethers3.formatUnits)(balance, decimals));
   } catch (err) {
     throw wrapError(err, `getTokenBalance(${tokenAddress}, ${walletAddress})`);
@@ -1293,22 +1309,33 @@ async function getLifecycleState(tokenAddress, provider) {
   validateAddress(tokenAddress, "tokenAddress");
   try {
     const token = new import_ethers11.Contract(tokenAddress, BondingCurveABI, provider);
-    const [thresholdReached, ethThreshold, isPaused, uniswapPair, uniswapRouter] = await Promise.all([
-      token.thresholdReached(),
-      token.ethThreshold(),
-      token.paused().catch(() => false),
-      // paused() may not exist on all versions
-      token.uniswapPair().catch(() => "0x0000000000000000000000000000000000000000"),
-      token.uniswapRouter().catch(() => "0x0000000000000000000000000000000000000000")
-    ]);
+    const zeroAddr = "0x0000000000000000000000000000000000000000";
+    let thresholdReached = false;
+    let finalized = false;
+    let uniswapPair = zeroAddr;
+    let ethThreshold = BigInt(0);
+    let isPaused = false;
+    let uniswapRouter = zeroAddr;
+    try {
+      const migrationStatus = await token.getMigrationStatus();
+      thresholdReached = migrationStatus[0];
+      finalized = migrationStatus[1];
+      uniswapPair = migrationStatus[2];
+      ethThreshold = migrationStatus[4];
+    } catch {
+      thresholdReached = await token.thresholdReached().catch(() => false);
+      ethThreshold = await token.ethThreshold().catch(() => BigInt(0));
+      uniswapPair = await token.uniswapPair().catch(() => zeroAddr);
+    }
+    isPaused = await token.paused().catch(() => false);
+    uniswapRouter = await token.uniswapRouter().catch(() => zeroAddr);
     const ethBalance = Number((0, import_ethers11.formatEther)(await provider.getBalance(tokenAddress)));
     const ethThresholdNum = Number((0, import_ethers11.formatEther)(ethThreshold));
     let stage;
-    const zeroAddr = "0x0000000000000000000000000000000000000000";
     const pairIsSet = uniswapPair && uniswapPair !== zeroAddr;
     if (isPaused) {
       stage = "paused";
-    } else if (pairIsSet) {
+    } else if (finalized || pairIsSet) {
       stage = "finalized";
     } else if (thresholdReached) {
       stage = "threshold_reached";

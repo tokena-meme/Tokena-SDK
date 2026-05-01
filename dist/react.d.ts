@@ -29,12 +29,20 @@ interface TokenState {
     currentPriceEth: number;
     /** Contract ETH balance (total, including pending fees) */
     ethBalance: number;
+    /** AMM ETH reserve only (excludes pending fees) */
+    ammEthReserve: number;
     /** Tokens held by the contract (available reserve) */
     tokenReserve: number;
     /** ETH threshold required to trigger finalization */
     ethThreshold: number;
     /** Whether the threshold has been reached */
     thresholdReached: boolean;
+    /** Whether Uniswap liquidity has been added (auto-migration complete) */
+    finalized: boolean;
+    /** Migration fee percentage (0-5) */
+    migrationFeePercent: number;
+    /** Uniswap pair address (or zero address if not created) */
+    uniswapPair: string;
     /** Whether this is a tax token */
     isTaxToken: boolean;
     /** Total token supply */

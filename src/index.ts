@@ -108,3 +108,7 @@ export {
 
 // ─── Validation ──────────────────────────────────────────────
 export { validateAddress, validatePositiveAmount, validateSlippageBps } from './core/validation';
+
+// ─── Solana / Meteora DBC ────────────────────────────────────
+// Re-export the full Solana module as a namespace
+export * as solana from './solana';

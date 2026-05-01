@@ -1,6 +1,10 @@
 /**
  * Human-readable ABI for the BondingCurve contract.
  * Covers all read/write functions and events.
+ *
+ * Includes auto-migration (finalized, getMigrationStatus) and legacy
+ * (thresholdReached, ethThreshold) function signatures for backwards
+ * compatibility with older deployed contracts.
  */
 export const BondingCurveABI = [
   // ─── Read Functions ────────────────────────────────────────
@@ -15,6 +19,9 @@ export const BondingCurveABI = [
   'function getAmmEthReserve() view returns (uint256)',
   'function ethThreshold() view returns (uint256)',
   'function thresholdReached() view returns (bool)',
+  'function finalized() view returns (bool)',
+  'function migrationFeePercent() view returns (uint256)',
+  'function getMigrationStatus() view returns (bool thresholdReached, bool finalized, address uniswapPair, uint256 ammEthReserve, uint256 ethThreshold, uint256 migrationFeePercent)',
   'function isTaxToken() view returns (bool)',
   'function companyWallet() view returns (address)',
   'function creatorWallet() view returns (address)',
@@ -52,4 +59,7 @@ export const BondingCurveABI = [
   'event ThresholdReached(uint256 totalEth)',
   'event LiquidityAdded(uint256 tokenAmount, uint256 ethAmount)',
   'event FeesUpdated(uint8 devBuyFee, uint8 devSellFee, uint8 marketingBuyFee, uint8 marketingSellFee)',
+  'event AutoFinalized(address indexed uniswapPair, uint256 tokenAmount, uint256 ethAmount)',
+  'event MigrationGasRefunded(address indexed buyer, uint256 gasRefund)',
+  'event MigrationFeeTaken(uint256 feeAmount)',
 ] as const;

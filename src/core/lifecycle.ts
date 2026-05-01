@@ -7,6 +7,9 @@ import { TransactionFailedError, wrapError } from '../errors';
 /**
  * Get the full lifecycle state of a bonding curve token.
  *
+ * Supports both new auto-migration contracts (getMigrationStatus) and
+ * legacy contracts (individual thresholdReached/ethThreshold calls).
+ *
  * @param tokenAddress - BondingCurve contract address
  * @param provider - Read-only provider
  * @returns Lifecycle state including stage, progress, and Uniswap info
@@ -19,27 +22,42 @@ export async function getLifecycleState(
 
   try {
     const token = new Contract(tokenAddress, BondingCurveABI, provider);
+    const zeroAddr = '0x0000000000000000000000000000000000000000';
 
-    const [thresholdReached, ethThreshold, isPaused, uniswapPair, uniswapRouter] =
-      await Promise.all([
-        token.thresholdReached(),
-        token.ethThreshold(),
-        token.paused().catch(() => false), // paused() may not exist on all versions
-        token.uniswapPair().catch(() => '0x0000000000000000000000000000000000000000'),
-        token.uniswapRouter().catch(() => '0x0000000000000000000000000000000000000000'),
-      ]);
+    let thresholdReached = false;
+    let finalized = false;
+    let uniswapPair = zeroAddr;
+    let ethThreshold = BigInt(0);
+    let isPaused = false;
+    let uniswapRouter = zeroAddr;
+
+    // Try getMigrationStatus() first (new auto-migration contracts)
+    try {
+      const migrationStatus = await token.getMigrationStatus();
+      thresholdReached = migrationStatus[0];
+      finalized = migrationStatus[1];
+      uniswapPair = migrationStatus[2];
+      ethThreshold = migrationStatus[4];
+    } catch {
+      // Fall back to individual calls (legacy contracts)
+      thresholdReached = await token.thresholdReached().catch(() => false);
+      ethThreshold = await token.ethThreshold().catch(() => BigInt(0));
+      uniswapPair = await token.uniswapPair().catch(() => zeroAddr);
+    }
+
+    isPaused = await token.paused().catch(() => false);
+    uniswapRouter = await token.uniswapRouter().catch(() => zeroAddr);
 
     const ethBalance = Number(formatEther(await provider.getBalance(tokenAddress)));
     const ethThresholdNum = Number(formatEther(ethThreshold));
 
     // Determine stage
     let stage: TokenLifecycleStage;
-    const zeroAddr = '0x0000000000000000000000000000000000000000';
     const pairIsSet = uniswapPair && uniswapPair !== zeroAddr;
 
     if (isPaused) {
       stage = 'paused';
-    } else if (pairIsSet) {
+    } else if (finalized || pairIsSet) {
       stage = 'finalized';
     } else if (thresholdReached) {
       stage = 'threshold_reached';
@@ -68,6 +86,7 @@ export async function getLifecycleState(
 
 /**
  * Check if a token's bonding curve has been finalized (liquidity added to Uniswap).
+ * With auto-migration, this happens atomically during a buy() call when the threshold is hit.
  *
  * @param tokenAddress - BondingCurve contract address
  * @param provider - Read-only provider
@@ -83,11 +102,15 @@ export async function isFinalized(
 
 /**
  * Trigger finalization of a bonding curve (add liquidity to Uniswap).
- * Can only be called when the threshold has been reached.
+ *
+ * NOTE: With the new auto-migration model, finalization happens automatically
+ * during buy() when the threshold is reached. This function is only needed
+ * for legacy contracts that require manual finalization.
  *
  * @param tokenAddress - BondingCurve contract address
  * @param signer - Signer to execute the transaction
  * @returns Transaction hash
+ * @deprecated Use auto-migration contracts where buy() triggers finalization automatically.
  */
 export async function finalizeToken(
   tokenAddress: string,
